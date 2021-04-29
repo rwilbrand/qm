@@ -1,0 +1,111 @@
+---
+title: "Assignment 4"
+author: "Robert Wilbrand"
+date: "29.11.2020"
+output: html_document
+---
+
+```{r setup, message=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+library(tidyverse)
+library(broom)
+data("airquality")
+airq1 <- select(airquality, -Solar.R, -Wind) %>% na.omit %>%
+  mutate(ID = 1:nrow(.))
+theme_set(theme_bw())
+```
+
+### 1. Build a hypothesis for the airquality data (1 points)
+
+Suppose you are tasked to analyze how the variability in near-surface ozone concentrations in New York is associated with local variations in weather conditions. With the airquality data set, plot ozone concentration (ppb) versus temperature (degrees F). Based on the observed relationship, phrase a plausible (!) research hypothesis. Think about which variable to plot on the x- and y-axes.
+
+```{r}
+ggplot(airq1, aes(Temp, Ozone)) + geom_point() +
+  geom_smooth(method = "lm", se=F)
+```
+
+Based on the observed data, it appears that there is a positive correlation between temperature and ozone
+
+### 2. Fit a linear model to the airquality data (3 points)
+
+Fit a simple linear regression model using ordinary-least-squares regression between ozone concentration and temperature to analyze the effect of temperature on ozone. Briefly answer the following questions: (1) How does ozone concentration change with Temperature? (2) Is the effect of temperature on ozone concentration significant? (3) How much of the variance in ozone concentration is explained by temperature alone? Show how you obtained the results with R?
+
+```{r}
+lm_aq <- lm(Ozone ~ Temp, airq1)
+lm_aq %>% summary %T>% print %>% magrittr::use_series(adj.r.squared)
+```
+
+1. Ozone concentration goes up with temperature
+2. The effect of temperature on ozone concentration is very significant, as can be seen from the very small p-value
+3. Temperature explains roughly 48.3% of the variance in ozone concentration, as shown by the adjusted R²
+
+
+### 3. Plot the regression (2 Points)
+
+Create a plot showing the fitted relationship between temperature and ozone concentration. Also show uncertainties in the regression line caused by uncertainty in the parameter estimates (confidence interval).
+
+```{r}
+airq2 <- broom::augment(lm_aq, interval = 'confidence')
+
+ggplot(airq2) +
+  geom_point(aes(Temp, Ozone)) +
+  geom_line(aes(Temp, .fitted)) +
+  geom_line(aes(Temp, .lower), linetype = "dashed") +
+  geom_line(aes(Temp, .upper), linetype = "dashed")
+```
+
+### 4. Model diagnostics (3 Points)
+
+Create two residual plots for the model: 1) a qq-plot and 2) a scatter-plot of fitted values versus residuals. Do the residuals look normal and properly distributed? Answer the question in 2-3 sentences.
+
+```{r}
+ggplot(airq2, aes(sample = .std.resid)) +
+  stat_qq() +
+  geom_abline(intercept = 0, slope = 1, col = "red")
+
+ggplot(airq2, aes(.fitted, .resid)) + geom_point() +
+  geom_hline(yintercept = 0, col = "red")
+```
+
+The residuals do not look normally distributed. Normally distributed data should be approximately symmetrical around the y-axis. The scatterplot clearly shows that that isn't the case. The QQ plot also points to the data being right-skewed.
+
+### 5. Transforming the response (3 Points in total, each part 1 point)
+
+5.1 Create a new column 'logOzone' in the airquality dataset by calculating the natural logarithm of Ozone concentration. Following, fit a model explaining the logarithm of ozone concentration by temperature.
+
+```{r}
+airq3 <- airq1 %>% 
+  mutate(logOzone = log(Ozone))
+
+lm_log <- lm(logOzone ~ Temp, airq3)
+```
+
+5.2 Check the residuals of the model. Do they look different/better/worse than for the previous model?
+
+```{r}
+airq4 <- broom::augment(lm_log, interval = 'confidence')
+
+ggplot(airq4, aes(.fitted, .resid)) + geom_point() +
+  geom_hline(yintercept = 0, col = "red")
+
+ggplot(airq4, aes(sample = .std.resid)) +
+  stat_qq() +
+  geom_abline(intercept = 0, slope = 1, col = "red")
+```
+
+The log-transformed data looks much more like normally distributed data compared with the non-transformed data and therefore represents a substantial improvement.
+
+5.3 Plot the regression line of the logged model (without confidence intervals). You can either plot it in log-space (using the logged ozone concentrations) or back-transform the logged ozone concentrations into linear space using the exp() function (recall: exp(log(x)) = x).
+
+```{r}
+# Back-transformed data
+ggplot(airq4) +
+  geom_point(aes(Temp, exp(logOzone))) +
+  geom_line(aes(Temp, exp(.fitted)), col = "darkgreen") +
+  labs(y = "Ozone")
+
+# Data with no back-transformation
+ggplot(airq4) +
+  geom_point(aes(Temp, logOzone)) +
+  geom_line(aes(Temp, .fitted), col = "darkgreen")
+```

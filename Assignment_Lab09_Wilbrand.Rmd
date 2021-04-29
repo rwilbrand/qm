@@ -1,0 +1,156 @@
+---
+title: "Assignment 9"
+author: "Robert Wilbrand"
+date: "14.1.21"
+output: html_document
+---
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(effects)
+library(MuMIn)
+theme_set(theme_bw())
+knitr::opts_knit$set(root.dir = "C:/MSc GCG/QM/Data/data")
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+**Using imagery from the Landsat satellites, a study mapped deforestation for an area in the Brazilian Amazon. Your task is it to analyze the proximate drivers of deforestation such as terrain, proximity to river and proximity to road. To do this, a random sample of 1000 pixels was selected from the deforestation map for analysis: Deforestation.txt.**
+
+## 1. Import and explore the dataset
+
+Import the Deforestation.txt dataset. How many samples were deforested (Deforestation=1) and how many were not deforested (Deforestation=0). What is the value range of the predictor variables? Show the R result. Write 2-3 sentences to answer the questions.
+
+```{r}
+defor <- read_csv2("Deforestation.txt") %>% 
+  mutate(across(where(is.character), as.double))
+
+table(defor$Deforestation)
+
+ranges <- map_dfc(2:5, ~range(dplyr::select(defor, .x)))
+colnames(ranges) <- colnames(defor)[2:5]
+ranges[3,] <- ranges[2,] - ranges[1,]
+bind_cols("Value" = c("Minimum", "Maximum", "Spread"), ranges)
+```
+
+Out of the 1000 sample observations, 151 were deforested (Deforestation = 1) while 849 were not. As seen in the table above, elevation ranges from 243 to 620m, slope from ~0.08 to ~19, distance from river from 0 to ~16.8km and distance to road from 0.1 to 121.8km.
+
+## 2. Estimate the effect of the highway on deforestation.
+
+### 2.1 Build a model that predicts probability of deforestation from distance to road (Dist_Road). Is the effect of distance to road significant? What is the direction of the effect (e.g. increase or decrease).
+
+```{r}
+# This problem appears analogous to the bison occurrence problem from the seminar,
+# so a binomial model seems appropriate here
+def.bin <- glm(Deforestation ~ Dist_Road, defor, family = binomial)
+def.bin_smry <- summary.glm(def.bin)
+def.bin_smry
+```
+
+The model predicts a highly significant (p < 1e-13) decrease of deforestation likelihood with increasing distance.
+
+### 2.2 What proportion of the deviance does the model explain ($R^2_{pseudo}$)? Give also a written answer.
+
+```{r}
+pseudoR2 <- 1 - (def.bin$deviance/def.bin$null.deviance)
+pseudoR2
+```
+
+The Pseudo-R2 of about 0.1 corresponds to a proportion of explained deviance of about 10%. This is a relatively low value, raising the question if further model improvement is possible with a different modeling approach.
+
+### 2.3 Plot deforestation against distance to road and overlay your fitted model with the confidence band.
+
+```{r}
+efx <- effect("Dist_Road", def.bin,
+               xlevels = list(Dist_Road = seq(0,125))) %>% 
+  as.data.frame()
+
+g1 <- ggplot() +
+  geom_point(defor, mapping = aes(Dist_Road, Deforestation)) +
+  xlab("Distance from road [km]") +
+  ylab("Likelihood of deforestation")
+
+g1 + geom_line(efx, mapping = aes(Dist_Road, fit)) +
+  geom_ribbon(efx, mapping = aes(Dist_Road,
+                                 ymin = lower,
+                                 ymax = upper), alpha = 0.3)
+```
+
+
+### 2.4 What is the deforestation probability 1 km away from the road according to your model? Accompany your R result with a written answer!
+
+```{r}
+efx$fit[efx$Dist_Road == 1]
+```
+
+At a distance of 1km from the road, the model predicts about a 1 in 3 chance of deforestation.
+
+### 2.5 How does an increase in 1km distance to the road affect the chance of deforestation? Use the odds-ratio to answer that question.
+
+```{r}
+# The average decrease can be derived by exponentiating the regression coefficient
+(1 - exp(coef(def.bin)[2])) %>% unname
+
+# For comparison, I also calculate the average decrease from the efx() dataframe
+efx <- mutate(efx, PctChange = 1 - fit/lag(fit))
+summarise(slice(efx, -1), AvgChange = mean(PctChange)) %>% pull
+ggplot(slice(efx, -1), aes(Dist_Road, PctChange*100)) +
+  geom_point() +
+  geom_line() +
+  xlab("Distance from road [km]") +
+  ylab("Incremental change in deforestation likelihood [%]")
+```
+
+The odds ratio can be derived by exponentiating the regression coefficient. This leads to a predicted decrease of deforestation likelihood by 3.7% for every km. By contrast, the average decrease derived from the effects package is lower at 3.4%.
+
+## 3. Model selection
+
+### 3.1 Build a model that predicts probability of deforestation from all terrain and distance variables. Try to find the best parsimonious model; include interaction terms if appropriate. Briefly describe your findings. You may select your model manually or by using an exhaustive model search algoritm such the `MuMIn` package.
+
+```{r}
+# Preparation step, without this option, dredge() from the MuMIn package likely fails
+options(na.action = "na.fail")
+
+# Function to automatically generate an exhaustive formula for modeling
+# Dependent variable is assumed to be in column 1 by default
+# Columns not to be used can be specified by index with exclude
+exh_formula <- function(df, i = 1, exclude = NULL){
+  j <- c(i, exclude)
+  paste(colnames(df)[i], " ~ ",
+        paste(colnames(df)[-j],
+              collapse = " * ")) %>%
+  as.formula
+}
+
+# Generate full model
+full_formula <- exh_formula(defor)
+full_model <- glm(full_formula, defor, family = binomial)
+
+# Parse all options using dredge()
+starttime <- Sys.time()
+dmod <- dredge(full_model)
+endtime <- Sys.time()
+endtime - starttime
+
+# Select the best-performing model
+best.model <- getCall(dmod, 1) %>% eval
+summary.glm(best.model)
+```
+
+Parsing the models using the dredge()-function, the best-performing model is the one that includes elevation, distance to road and their interaction. Slope and distance to river are not used in this model.
+
+### 3.2 Visualze how the effect of distance to road varies with elevation! Describe the graph in 1-2 sentence.
+
+```{r}
+efx2 <- effect("Dist_Road:Elevation", best.model,
+               xlevels = list(Elevation = seq(250,500,by = 50),
+                              Dist_Road = seq(0,125))) %>% 
+  as.data.frame() 
+efx2$Elevation <- as.factor(efx2$Elevation)
+ggplot(efx2) + geom_line(aes(Dist_Road, fit, col = Elevation)) +
+  geom_ribbon(aes(Dist_Road, ymin = lower, ymax = upper, fill = Elevation),
+              alpha = 0.2) +
+  xlab("Distance to road [km]") +
+  ylab("Likelihood of deforestation")
+```
+
+I excluded elevation above 500m, because there are no deforested observations above this threshold in the sample. Up to about 65km, deforestation likelihood is higher for low altitudes than for higher altitudes. The situation inverts above this threshold, although at a low overall level. At 500m, predicted deforestation likelihood is almost constant, but uncertainty is high.

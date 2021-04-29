@@ -1,0 +1,80 @@
+---
+title: "Assignment 6"
+author: "Robert Wilbrand"
+date: "13.12.2020"
+output: html_document
+---
+
+```{r setup, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(broom)
+library(magrittr)
+theme_set(theme_bw())
+knitr::opts_knit$set(root.dir = "C:/MSc GCG/QM/Data/data")
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+options(scipen = 8) # suppress scientific notation for up to 8 digits
+```
+
+**Exercise:** In an experiment, the diameter of Tetrahymena cells (free-living ciliate protozoa) was measured in cultures of varying cell density and with and without glucose supplement (= additional energy). Using a linear regression approach, analyze the data to address the following questions: (1) Does cell concentration influence cell growth? (2) If so, does the effect vary between cell cultures with glucose supplement and without?
+
+## 1. Import and prepare the dataset (1 Point)
+
+The data is on Moodle.
+
+```{r import}
+tetrahymena <- read_tsv("tetrahymena_zellen.txt") %>% 
+  mutate(across(glucose, as_factor))
+```
+
+## 2. Visualize the data (2 Points)
+
+Create a scatterplot to explore the relationships between concentration, diameter and glucose supplement. Is the relationship linear? If not, how can you correct for it? Hint: Transforming a predictor might help! Briefly describe your thoughts on the relationships and the effects you might expect.
+
+```{r exploration}
+tet_plot <- ggplot(tetrahymena, aes(concentration, diameter, col = glucose)) +
+  geom_point() +
+  labs(x = "Concentration [1/l]",
+       y = "Diameter [µm]",
+       col = "Glucose supplement")
+tet_plot
+```
+
+There is a non-linear negative correlation between concentration and diameter. Transforming concentration with a decadal logarithm should result in a linear relationship. Cells with glucose supplements have higher average diameters.
+
+## 3. Build a simple linear model (2 Points)
+
+Build an appropriate linear model between diameter (response) and concentration (predictor) and visualize it graphically. Assess the assumptions and the goodness-of-fit of the model. Briefly describe your findings.
+
+```{r single model}
+# The choice between different logarithms doesn't influence goodness-of-fit,
+# but log10 is easier to interpret
+smodel <- lm(diameter ~ log10(concentration), tetrahymena)
+summary.lm(smodel)
+tet_p2 <- augment(smodel, tetrahymena)
+tet_log <- tet_plot + scale_x_log10() 
+tet_log + geom_line(aes(concentration, .fitted), data = tet_p2)
+```
+
+The single regression model predicts a diameter decrease by ~2.7µm per 10-fold increase in concentration with high confidence (significant at 99.9% confidence level), and with an adjusted R² of 0.6326 explains about 63% of observed variance. The graph further shows that while the regression line is a decent fit for the data overall, it doesn't fit particular well for either with or without glucose supplement.
+
+## 4. Multiple linear model (2 Points)
+
+Now build a multiple linear model by adding glucose as additional predictor interacting with concentration. Compare your model to the previous one based on the AIC. Does including glucose improve the model fit?
+
+```{r multi model}
+mmodel <- update(smodel, .~. * glucose)
+summary.lm(mmodel)
+AIC(smodel)
+AIC(mmodel)
+```
+
+With an AIC of `r AIC(mmodel) %>% round(3)` instead of `r AIC(smodel) %>% round(3)`, the updated model dramatically outperforms the single regression model. The drastic increase of the adjusted R² from `r smodel %>% summary %>% use_series(adj.r.squared) %>% round(4)` to `r mmodel %>% summary %>% use_series(adj.r.squared) %>% round(4)` provides further evidence of increased model performance.
+
+## 5. Plot the regression lines of the multiple linear model (3 Points)
+
+Plot the regression line for the multiple-regression model, that is one line for each class (glucose/no glucose).
+
+```{r plot results}
+tet_aug <- augment(mmodel, tetrahymena)
+tet_log + geom_line(aes(concentration, .fitted, col = glucose), data = tet_aug)
+```

@@ -1,0 +1,169 @@
+---
+title: "Assignment 13"
+author: "Robert Wilbrand"
+date: "15.2.2021"
+output: html_document
+---
+
+```{r setup, message=FALSE}
+library(raster)
+library(tidyverse)
+library(sf)
+library(MuMIn)
+theme_set(theme_minimal())
+knitr::opts_knit$set(root.dir = "C:/MSc GCG/QM/Data/data")
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+options(scipen = 8)
+```
+
+# A simple species distribution model.
+
+The goal of this exercise is to build a simple statistical species distribution model for *Abies alba*. We will use a  Europe-wide tree species occurrence data set (Mauri et al., 2017) as reference and the Bioclim dataset as predictors.
+
+Mauri, A., Strona, G., & San-Miguel-Ayanz, J. (2017). EU-Forest, a high-resolution tree occurrence dataset for Europe. Sci Data, 4, 160123
+
+## 1) Calculate the count of *Abies alba* observations within each Bioclim grid cell (2 Points): 
+
+We start by importing the dataset ("abiesalba.csv") and visualizing the observed occurrence of *Abies alba*. To make this occurrence dataset spatially comparable to the predicted map that we will build later, I want you to create a raster of the occurrence counts at the spatial resolution of the bioclim dataset (bioclim_europe.tif). Check out the raster::rasterize() function to achieve this.
+
+You can download the bioclim_europe.tif from: https://1drv.ms/u/s!AqNb6reoHXeZoq9JzbzkiwU_Gqu06w?e=wejkdx. The bioclim_europe raster has an equal-area projection (EPSG:3035, see: https://spatialreference.org/ref/epsg/etrs89-etrs-laea/). 
+
+```{r, warning=FALSE, message=F}
+# load occurrence data
+abies <- read_csv("abiesalba.csv")
+
+# convert to sf and transform CRS based on EPSG code
+abies_sf <- st_as_sf(abies,
+                     coords = c("long", "lat"),
+                     crs = 4326) %>% 
+  st_transform(3035)
+
+# extract extent object of observed abies occurrences
+ext_abies <- extent(abies_sf)
+
+# load bioclim data
+bioclim_europe <- stack("bioclim_europe.tif")
+names(bioclim_europe) <- c(paste0("bio0", 1:9),
+                           paste0("bio", 10:19))
+
+# rasterize occurrences with a template based on bioclim raster
+ras <- raster(bioclim_europe)
+abies_count <- rasterize(abies_sf, ras, fun = "count", background = 0)
+
+# use one of the bioclim layers to mask NAs
+abies_count <- mask(abies_count, bioclim_europe[[1]])
+plot(abies_count, ext = ext_abies)
+```
+
+## 2) Prepare a dataset combining response and predictor variables (3 Points): 
+
+Before we can train our statistical model, we need to create a random sample from our response and predictor variables. The result should be a data.frame. Note, stack the bioclim and count raster before sampling. 
+
+When sampling, you have two options: 1) a random sample of 20% of the observed grid-cells, OR 2) create a stratified sample containing 20% of the observations in each count class.
+
+Option 2 gets extra points. Hint: You can combine dplyr::group_by() and dplyr::sample_frac()!
+
+```{r}
+# stack bioclim and occurrence data, crop to abies extent
+bc_abies <- stack(bioclim_europe, abies_count)
+bc_cropped <- crop(bc_abies, ext_abies)
+
+# convert to tibble
+# because high numbers of counts have few occurrences, I aggregate classes: 9-12 counts, 13-20 counts, 21-30 counts, 30+ counts
+bc_abies_tbb <- as.data.frame(bc_cropped, xy = T, na.rm = T) %>%
+  as_tibble %>% 
+  rename(abies = layer) %>% 
+  relocate(abies) %>% 
+  mutate(count_class = cut(abies,
+                           breaks = c(0:8, 12, 20, 30, Inf),
+                           include.lowest = T))
+
+# stratified sampling with 20% per class
+set.seed(4832)
+bc_abies_sample <- bc_abies_tbb %>% 
+  group_by(count_class) %>% 
+  slice_sample(prop = 0.2) %>% 
+  ungroup
+```
+
+## 3) Build a model predicting the count of *Abies alba* (3 Points)
+
+Use a GLM to predict the occurrence of *Abies alba* from bioclim data. You can hand-pick variables or use a variable selection technique. Your choice.
+
+```{r}
+# Preparation step, without this option, dredge() from the MuMIn package likely fails
+options(na.action = "na.fail")
+
+# Function to automatically generate an exhaustive formula for modeling
+# Dependent variable is assumed to be in column 1 by default
+# Columns not to be used can be specified by index with exclude
+exh_formula <- function(df, i = 1, exclude = NULL){
+  j <- c(i, exclude)
+  paste(colnames(df)[i], " ~ ",
+        paste(colnames(df)[-j],
+              collapse = " + ")) %>%
+  as.formula
+}
+
+# Interaction terms are not considered due to concerns about excessive computation time and because some terms already implicitly consider interactions (e.g. BIO8: Mean temperature of wettest quarter)
+# BIO3 and BIO7 are excluded because they are linearly dependent on other variables
+full_form <- select(bc_abies_sample, abies, starts_with("bio")) %>%
+  exh_formula(exclude = c(4,8))
+
+# With positively bounded count data, I choose a Poisson distribution model
+full_mod <- glm(full_form, bc_abies_sample,
+                family = poisson(link = "log"))
+```
+
+Computation of the following chunk was done in an interactive session and is not repeated here (eval=FALSE) due to long computation time (>2h).
+
+```{r, eval=FALSE}
+starttime <- Sys.time()
+dmod <- dredge(full_mod)
+endtime <- Sys.time()
+endtime - starttime
+saveRDS(dmod, "Abies_models.rds")
+```
+
+```{r}
+dmod <- read_rds("Abies_models.rds")
+
+picked.model <- getCall(dmod, 1) %>% eval
+```
+
+The best-performing model when using dredge() uses all of the selected predictors except for BIO19.
+
+## 4) Create a map of the predicted *Abies alba* counts (2 Point)
+
+```{r, warning=FALSE, message=F}
+# create prediction
+pred <- raster::predict(bc_cropped, picked.model)
+
+# convert to tibble
+# predictions need to be back-transformed with exp()
+pred_df <- as.data.frame(pred, xy = T) %>% 
+  as_tibble %>% 
+  mutate(abies_pred = exp(layer))
+
+# join prediction to data tibble to calculate difference between prediction and observation
+joined_df <- left_join(bc_abies_tbb, pred_df) %>% 
+  mutate(difference = abies - abies_pred)
+
+# plot predicted abies counts
+ggplot(joined_df, aes(x, y, fill = abies_pred)) +
+  geom_raster() +
+  scale_fill_distiller(palette = "YlGnBu", direction = 1) +
+  labs(x = "", y = "", fill = "Predicted count") +
+  coord_fixed()
+
+# plot difference
+ggplot(joined_df, aes(x, y, fill = difference)) +
+  geom_raster() +
+  scale_fill_gradient2(mid = "grey95") +
+  labs(x = "", y = "", fill = "Delta",
+       title = "Difference between abies alba observation and prediction",
+       subtitle = "Blue: observation > prediction, Red: observation < prediction") +
+  coord_fixed()
+```
+
+Discrepancies between observed and predicted counts are not surprising, because tree occurrence is likely to be influenced by factors other than climate data, e.g. land management and topography

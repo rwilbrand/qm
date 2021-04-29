@@ -1,0 +1,145 @@
+---
+title: "Assignment 14"
+author: "Robert Wilbrand"
+date: "27.02.2021"
+output: html_document
+---
+
+```{r setup, message=FALSE}
+library(raster)
+library(tidyverse)
+library(sf)
+library(gstat)
+theme_set(theme_minimal())
+knitr::opts_knit$set(root.dir = "C:/MSc GCG/QM/Data/data")
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+options(scipen = 8)
+```
+
+## Climate station data for Germany
+
+For this exercise we will use long-term average climate station data from the German Meteorological Service (DWD). Monthly and yearly average precipitation (mm) data are available for the period 1981 and 2010.
+
+http://www.dwd.de/DE/leistungen/klimadatendeutschland/langj_mittelwerte.html
+
+ftp://ftp-cdc.dwd.de/pub/CDC/
+
+In this exercise, you are asked to create precipitation maps for the state of Brandenburg from weather station data using two different methods: 1) inverse distance weighted interpolation, and 2) ordinary kriging. Plot and compare the results/maps and semi-variograms. 
+
+### 1. Create a SpatialPointsDataFrame.
+
+Create a SpatialPointsDataFrame from the precipitation dataset `"nieder_1981-2010_aktStandort.csv"`. The precipitation dataset contains longitude (column `x`) and latitude (column `y`). The coordinate reference system is geographic WGS-84 (EPSG code 4326). In proj4 format this can be written as `"+init=epsg:4326"`. To analyze spatial distances you need to transform this dataset to an equal area projection, e.g. `"+init=epsg:3035"`. Note, use only the station data from Brandenburg (see `state` column).
+
+```{r}
+# read in data
+precip <- read_csv("nieder_1981-2010_aktStandort.csv")
+
+# create Brandenburg mask
+# Downloaded from https://gadm.org/data.html
+bundesland <- readRDS("gadm36_DEU_1_sf.rds")
+brandenburg_outline <- bundesland %>%
+  filter(NAME_1 == "Brandenburg") %>% 
+  st_transform(3035)
+
+# subset data, define as spatial and transform to appropriate CRS 
+brandenburg_sf <- precip %>%
+  filter(state == "Brandenburg") %>%
+  st_as_sf(coords = c("x","y")) %>%
+  st_set_crs(4326) %>%
+  st_transform(3035)
+
+# create regular grid for interpolation, intersect with spatial mask
+bb_grid <- st_make_grid(brandenburg_sf,
+                        n = c(100,100),
+                        what = "centers") %>% 
+  st_intersection(brandenburg_outline)
+```
+
+
+### 2. Create a map of annual precipitation (column `year`) using Inverse Distance Weighted Interpolation.
+
+```{r, fig.align='center'}
+# perform IDW interpolation with power=2
+bb.idw <- idw(year ~ 1, brandenburg_sf, bb_grid, idp = 2)
+
+# Alternative approach that is likely more computationally efficient
+# bb.tbb3 <- bb.idw %>%
+#   as_tibble %>%
+#   separate(geometry, into = c("x","y"), sep = " ") %>%
+#   mutate(across(x, ~str_sub(.x, 3, -2) %>% as.numeric),
+#          across(y, ~str_sub(.x, end = -2) %>% as.numeric))
+
+xy_points <- function(sfcp){
+  # convenience function intended to split the geometry of 
+  # gridded sfc_POINT objects into x and y columns
+  # this is useful for easy plotting with geom_raster() in ggplot2
+  # because geom_sf() is not well-suited for gridded point objects
+  sfcp %>%
+  as_tibble %>%
+  mutate(across(geometry, ~as.character(.x) %>%
+                  str_remove_all("[:alpha:]|[(,)]"))) %>%
+  separate(geometry, into = c("x","y"), sep = "[[:blank:]]", convert = T)
+}
+
+# bb.tbb4 <- bb.idw %>%
+#   as_tibble %>%
+#   mutate(across(geometry, ~as.character(.x) %>%
+#                   str_remove_all("[:alpha:]|[(,)]"))) %>%
+#   separate(geometry, into = c("x","y"), sep = "[[:blank:]]", convert = T)
+
+# create template raster and rasterize interpolation results
+bb.tmp <- raster(bb.idw, ncol = 100, nrow = 100)
+bb.ras <- rasterize(bb.idw, bb.tmp, "var1.pred")
+
+# reset to tibble for easy plotting
+bb.tbb <- bb.ras %>% as.data.frame(xy=T) %>% as_tibble
+
+# plot results
+ggplot() +
+  geom_sf(data = brandenburg_outline) +
+  # geom_raster(data = bb.tbb3, aes(x, y, fill = var1.pred)) +
+
+  geom_raster(data = bb.tbb, aes(x, y, fill = layer)) +
+  scale_fill_distiller(palette = "Spectral",
+                       na.value = NA,
+                       direction = 1) +
+  geom_sf(data = brandenburg_sf, alpha = 0.1) +
+  labs(x="",y="", fill = "Precipitation") +
+  coord_sf(label_axes = "----",
+           datum = st_crs(3035))
+```
+
+### 3. Create a map of annual precipitation (column `year`) using ordinary kriging with constant intercept.
+
+```{r, fig.align='center'}
+# create empirical variogram
+bbv <- variogram(year ~ 1, brandenburg_sf)
+
+# fit theoretical variogram
+bb.vfit <- fit.variogram(bbv, vgm(1100, "Sph", 45000, 1))
+
+# show variogram parameters and plots
+bb.vfit
+plot(bbv, bb.vfit)
+
+# perform ordinary kriging
+bb.ok <- krige(year ~ 1, brandenburg_sf, bb_grid, bb.vfit)
+
+# rasterize (with previously created template)
+bb.ras2 <- rasterize(bb.ok, bb.tmp)
+
+# reset to tibble for easy plotting
+bb.tbb2 <- bb.ras2 %>% as.data.frame(xy=T) %>% as_tibble
+
+# plot results
+ggplot() +
+  geom_sf(data = brandenburg_outline) +
+  geom_raster(data = bb.tbb2, aes(x, y, fill = var1.pred)) +
+  scale_fill_distiller(palette = "Spectral",
+                       na.value = NA,
+                       direction = 1) +
+  geom_sf(data = brandenburg_sf, alpha = 0.1) +
+  labs(x="",y="", fill = "Precipitation") +
+  coord_sf(label_axes = "----",
+           datum = st_crs(3035))
+```

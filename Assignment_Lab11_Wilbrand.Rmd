@@ -1,0 +1,60 @@
+---
+title: "Assignment 11"
+author: "Robert Wilbrand"
+date: "2.2.2021"
+output: html_document
+---
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(caret)
+library(MASS)
+theme_set(theme_bw())
+knitr::opts_knit$set(root.dir = "C:/MSc GCG/QM/Data/data")
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+options(scipen = 8)
+```
+
+## 1. Use the built-in iris dataset to build a linear discriminant analysis model that predicts Species from the four Sepal and Petal measurements. Note data("iris") loads the built-in dataset. Answer the following questions: 1) How many discriminant functions are estimated? 
+
+```{r}
+data("iris")
+iris <- as_tibble(iris)
+summary(iris)
+
+lda_iris <- lda(Species ~ ., iris)
+lda_iris
+
+iris_pred <- predict(lda_iris)
+table(iris_pred$class, iris$Species)
+```
+
+Two discriminant functions are estimated from the data (one fewer than the number of categories).
+
+## 2. How many discriminant functions might be needed to distinguish the three Species? Show and explain why.
+
+```{r}
+lda_iris$svd^2 / sum(lda_iris$svd^2)
+
+plot(lda_iris, col = as.numeric(iris$Species))
+```
+
+LD1 explains over 99% of the variance in the data, so LD2 is not necessary to distinguish between species. The plot illustrates this nicely as well.
+
+## 3. Which of the 4 variables are most important for distinguishing species? Show and explain why.
+
+```{r}
+pairs(iris[,1:4], upper.panel=NULL, pch=21,
+      bg=c("magenta","yellow","cyan")[as.factor(iris$Species)])
+```
+
+Petal width has the largest contribution to both discriminant functions (in terms of absolute value) and is thus most important for telling species apart. This can also be seen visually in the graph.
+
+## 4. Use leave-one-out crossvalidation to predict species with linear discriminant function analysis. Show the resulting confusion matrix and estimate the overall classification accuracy? Show and describe your results.
+
+```{r}
+lda_iris2 <- lda(Species ~ ., iris, CV=T)
+confusionMatrix(lda_iris2$class, iris$Species)
+```
+
+The confusion matrix doesn't change when introducing leave-one-out cross-validation. Overall accuracy is ~98%. Setosa can be identified perfectly, but there are misclassifications between the two other species.

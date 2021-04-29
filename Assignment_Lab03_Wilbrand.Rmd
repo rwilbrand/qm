@@ -1,0 +1,127 @@
+---
+title: "Assignment Lab Session 3"
+author: "Robert Wilbrand"
+date: "19.11.2020"
+output: html_document
+---
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(gridExtra)
+theme_set(theme_bw())
+knitr::opts_knit$set(root.dir = "C:/MSc GCG/QM/Data/data")
+```
+
+### 1. Plotting the airquality dataset (2 points)
+
+Create a scatter-plot showing the relationship between temperature, solar radiation and wind speed. Briefly describe what you see.
+
+```{r, warning=FALSE}
+airquality <- airquality %>% 
+  as_tibble
+gg_aq <- ggplot(airquality, aes(Temp, Wind, col = Solar.R)) +
+  scale_color_gradient(low = "Yellow2", high = "Red2") +
+  geom_point() + theme_dark()
+gg_aq
+
+# Alternative approach with individual plots
+gg_aq2 <- ggplot(airquality, aes(Temp, Solar.R)) + geom_point()
+gg_aq3 <- ggplot(airquality, aes(Wind, Solar.R)) + geom_point()
+gg_aq4 <- ggplot(airquality, aes(Temp, Wind)) + geom_point()
+
+grid.arrange(gg_aq2, gg_aq3, gg_aq4, nrow = 1)
+```
+
+There appears to be a negative correlation between temperature and wind speed. Wind speed and solar radiation appear not to be correlated. The relationship between temperature and solar radiation looks to be slightly more complicated, with a roughly linear trend below a solar radiation of 200, but that trend doesn't seem to hold for higher values of solar radiation.
+
+-----------------------------------------------------------------------------
+
+Create a scatterplot showing the relationship between ozone concentration and temperature for each month. Briefly describe what you see.
+
+```{r, message=FALSE, warning=FALSE}
+airquality <- mutate(airquality, Month.factor = fct_recode(as_factor(Month),
+                                                May = "5",
+                                                June = "6",
+                                                July = "7",
+                                                August = "8",
+                                                September = "9"))
+
+gg_scatter <- ggplot(airquality, aes(Temp, Ozone)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = F) +
+  facet_wrap(~Month.factor)
+gg_scatter
+```
+
+### 2. Wrangel the airquality data (4 points)
+
+Transform the airquality dataset into long-format, with a key column indicating the type of measurement and a value column giving the actual measurements (while keeping the Day, Month, and ID columns).
+
+```{r}
+airquality_long <- airquality %>%
+  mutate(ID = 1:nrow(airquality)) %>% 
+  relocate(ID, Day) %>% #rearrange column order
+  pivot_longer(-c(Day, Month, ID, Month.factor),
+               names_to = "variable",
+               values_to = "measurement")
+airquality_long
+```
+
+Use the transformed dataset to simultaneously visualize the trend of ozone concentration, temperature, wind speed, and solar radiation over time. Hint: The ID column gives you a sequential index of measurement!
+
+```{r}
+airquality_long %>%
+  na.omit %>% 
+  mutate(day_of_year = ID + 120) -> airquality_2
+
+gg_all <- ggplot(airquality_2, aes(day_of_year,
+                                   measurement,
+                                   col = variable)) +
+  geom_line() +
+  facet_wrap(~variable, scales = "free_y")
+gg_all
+```
+
+### 3. Tree rings (4 points)
+
+Import the dataset 'treering.csv'. Columns  1 to 56 contain dendrochronological time series of 56 tree cores (annual growth = tree ring widths in mm). Column 57 contains the year associated with the annual tree rings. The dendrochronological time series are of different length, e.g. not all years are observed in each tree core. The column names are the names (ids) of the tree cores.
+
+In Moodle, you'll find an example plot 'treering_example.pdf' showing time series of tree ring widths for each tree core. Create a plot that shows the exact same relationships. Hint: Use the `gather()` function to convert the dataset into the appropriate format!
+
+**NOTE:** In markdown it might be necessary to index the namespace of some functions. In particular, `dplyr::select()` and `dplyr::filter()` might fail knitting if the namespace is not defined.
+
+```{r}
+rings_of_trees <- read.csv("treering.csv", sep = ",") %>% 
+  as_tibble %>% 
+  pivot_longer(-Year, "treeplot", "increment") %>% 
+  na.omit %>% 
+  arrange(treeplot)
+treesX40 <- rings_of_trees %>% filter(treeplot %in% c("X_40_A", "X_40_B"))
+
+theme_set(theme_bw())
+gg_trees <- ggplot(treesX40, aes(Year, value, color = treeplot)) +
+  geom_line() +
+  labs(y = "Tree ring width [mm]")
+gg_trees
+```
+
+Following, calculate the mean and standard deviation of increment for each dendrochronological time series. Hint: Use a combination of `group_by()` and `summarize()` available through the **dplyr** package. Prove your solution by showing the first 5 rows of the summary dataset!
+
+```{r, message=F}
+trees_summary <- rings_of_trees %>% 
+  group_by(treeplot) %>% 
+  summarise(std_dev = sd(value),
+            avg_trw = mean(value))
+slice(trees_summary, 1:5)
+
+trees_summary <- summarise(group_by(rings_of_trees, treeplot),
+                           std_dev = sd(value),
+                           avg_trw = mean(value))
+```
+
+Which plot has the highest/lowest increment?
+
+```{r}
+slice(trees_summary, which.min(trees_summary$avg_trw))
+slice(trees_summary, which.max(trees_summary$avg_trw))
+```

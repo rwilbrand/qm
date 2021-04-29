@@ -1,0 +1,159 @@
+---
+title: "Assignment 07"
+author: "Robert Wilbrand"
+date: "5.1.2021"
+output: html_document
+---
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(e1071)
+knitr::opts_knit$set(root.dir = "C:/MSc GCG/QM/Data/data")
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+**Twinkle, twinkle, little Pulsar - the holiday exercise** 
+
+The input data set describes a sample of pulsar candidates collected during the High Time Resolution Universe Survey (South).
+
+Pulsars are a rare type of Neutron star that produce radio emission detectable here on Earth. They are of considerable scientific interest as probes of space-time, the inter-stellar medium, and states of matter. Each pulsar produces a slightly different emission pattern, which varies slightly with each rotation. Thus a potential signal detection known as a 'candidate', is averaged over many rotations of the pulsar, as determined by the length of an observation. In the absence of additional info, each candidate could potentially describe a real pulsar. However in practice almost all detections are caused by radio frequency interference (RFI) and noise, making legitimate signals hard to find.
+
+The data set shared here contains 16,259 spurious examples caused by RFI/noise, and 1,639 real pulsar examples. Each row lists the variables first, and the class label is the final entry. The class labels used are 0 (negative) and 1 (positive). 
+
+The task of this assignment is train a Support Vector Machine classifier to facilitate the automated discrimination of real pulsars and noise.
+
+## 1. Import and review the dataset (1 Point)
+
+The HTRU2 data is on Moodle. Prepare overviews of the data set's structure and summary statistics of the individual columns (features).
+Beware: lot's of observations here, keep it short and focused.
+
+```{r}
+# Import dataset, convert response to factor
+pulsar <- read_csv("HTRU_2.csv", col_names = F) %>%
+  mutate(across(X9, as.factor))
+
+# Show structure and summaries
+str(pulsar, give.attr = F)
+summary(pulsar[,-9])
+```
+
+## 2. Create 'test' and 'train' subsets (2 Points)
+
+The test and train subsets should contain 15% and 85% of the data set, respectively. Each subset should include a data frame 'X' with predictors and 'y' with the response variable. Make sure the response variables are converted to factors.
+
+```{r}
+# Set seed for reproducibility
+set.seed(2754)
+# set.seed(4724)
+
+# Split into train (85%) and test (15%) subsets
+pulsar_test <- slice_sample(pulsar, prop = 0.15)
+pulsar_train <- setdiff(pulsar, pulsar_test)
+
+# Separate predictors and responses
+# svm() doesn't work with tibbles,
+# so back-transformation to regular dataframes is necessary
+pulsar_train_X <- select(pulsar_train, X1:X8) %>% as.data.frame
+pulsar_train_y <- select(pulsar_train, X9) %>% pull
+
+pulsar_test_X <- select(pulsar_test, X1:X8) %>% as.data.frame
+pulsar_test_y <- select(pulsar_test, X9) %>% pull
+```
+
+## 3. Feature preparation (2 Points)
+SVM works best with standardized features. Transform the predictors (X) for test and train datasets, so that for each column's mean equals zero and variance equals 1 (Careful, do not standardize the response (y) variables!).
+Check the results by printing summary statistics.
+
+Hint: R has built-in functions for this task.
+```{r}
+# Scale predictor datasets
+pulsar_test_X_scaled <- scale(pulsar_test_X)
+pulsar_train_X_scaled <- scale(pulsar_train_X)
+
+# Check that means are zero and variances (diagonal only) equal 1
+summary(pulsar_test_X_scaled)
+pulsar_test_X_scaled %>% var %>% diag
+
+summary(pulsar_train_X_scaled)
+pulsar_train_X_scaled %>% var %>% diag
+```
+
+## 4. Train an initial SVM model (3 Points)
+
+Use the train data prepared before to build a SVM model. Assess the model performance in discriminating pulsars from noise in the test data set using (a) confusion matrix tables and (b) the portion of correct classifications. Briefly describe your findings.
+
+```{r}
+# Build initial SVM model
+init_mod <- svm(pulsar_train_X_scaled, pulsar_train_y)
+print(init_mod)
+
+# Predict response for train and test subsets
+init_p_trn <- predict(init_mod, pulsar_train_X_scaled)
+init_p_tst <- predict(init_mod, pulsar_test_X_scaled)
+
+# Confusion matrices
+cmat_trn <- table(init_p_trn, pulsar_train_y)
+cmat_tst <- table(init_p_tst, pulsar_test_y)
+
+# Display performance metrics
+print(cmat_trn)
+pct_trn_correct <- (sum(diag(cmat_trn))/sum(cmat_trn))*100
+print(paste0("Correct classification (training subset): ",
+             round(pct_trn_correct, 2), "%"))
+
+print(cmat_tst)
+pct_tst_correct <- (sum(diag(cmat_tst))/sum(cmat_tst))*100
+print(paste0("Correct classification (test subset): ",
+             round(pct_tst_correct, 2), "%"))
+```
+
+At around 98% correct classifications, the performance of the initial model is already quite good. Surprisingly, the model performs better on the test dataset than on the training dataset. It is important to note that the proportion of overall correct classifications can be misleading if the sizes of the classification classes are highly unequal, as is the case here. Looking at rates of false positives and false negatives separately can be beneficial here.
+
+## 5. Hyperparameter tuning (3 Points)
+
+Try to optimize further the predictive power of the SVM classifier by finding optimal values for the 'cost' and 'gamma' hyperparameters.
+
+Hint: to avoid long processing times, start with few options and relatively large steps for cost and gamma. Then, iteratively add optimize for the most promising value ranges.
+
+Assess the model performance in discriminating pulsars from noise in the test data set using (a) confusion matrix tables and (b) the portion of correct classifications. Briefly discuss the results in comparison to those from the initial SVM run.
+
+```{r}
+# Initialize parameter ranges
+rng_conf <- list(cost = 2:6*2000,
+                 gamma = 2:6/5000)
+
+# Tune model, keeping track of computing time
+start_time <- Sys.time()
+tuned_mod <- tune(svm,
+                  pulsar_train_X_scaled,
+                  pulsar_train_y,
+                  ranges = rng_conf)
+time_elapsed <- Sys.time() - start_time
+print(time_elapsed)
+
+# Display best parameters and select best model
+print(tuned_mod$best.parameters)
+tuned_best <- tuned_mod$best.model
+tuned_best
+
+# Create predictions based on best-performing model
+tuned_p_trn <- predict(tuned_best, pulsar_train_X_scaled)
+tuned_p_tst <- predict(tuned_best, pulsar_test_X_scaled)
+
+# Extract and display performance metrics in comparison with untuned model
+cmat_trn_tuned <- table(tuned_p_trn, pulsar_train_y)
+cmat_tst_tuned <- table(tuned_p_tst, pulsar_test_y)
+pct_trn_cor_tuned <- (sum(diag(cmat_trn_tuned))/sum(cmat_trn_tuned))*100
+pct_tst_cor_tuned <- (sum(diag(cmat_tst_tuned))/sum(cmat_tst_tuned))*100
+
+print(list("Accuracy for untuned training data" = pct_trn_correct,
+           "Accuracy for tuned training data" = pct_trn_cor_tuned,
+           "Accuracy for untuned testing data" = pct_tst_correct,
+           "Accuracy for tuned testing data" = pct_tst_cor_tuned))
+print(list("Confusion matrix for untuned training data" = cmat_trn,
+           "Confusion matrix for tuned training data" = cmat_trn_tuned,
+           "Confusion matrix for untuned testing data" = cmat_tst,
+           "Confusion matrix for tuned testing data" = cmat_tst_tuned))
+```
+
+Improvements to the model are minimal, even after trying many different ranges of parameters (only the final range is shown here). I kept trying new ranges as long as the optimal parameters were either the highest or lowest value in the parameter range. None of the models in this process managed to switch more than one misclassification to a correct classification in the test data. In the training data, a few more misclassifications were fixed. The only marginal improvement is probably due to the results already being solid in the initial SVM run, leaving little room for optimization.

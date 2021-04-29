@@ -1,0 +1,122 @@
+---
+title: "Assignment 12"
+author: "Robert Wilbrand"
+date: "8.2.2021"
+output: html_document
+---
+
+```{r setup, message=FALSE}
+library(raster)
+library(tidyverse)
+theme_set(theme_bw())
+knitr::opts_knit$set(root.dir = "C:/MSc GCG/QM/Data/data")
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+options(scipen = 8)
+```
+
+## 1. Conduct a K-Means cluster analysis on the global bioclim dataset. Find the optimal number of clusters using the elbow method. Explain and show your results. How much variance do the selected clusters explain together?
+
+```{r}
+# load raster and set NA value
+bioclim <- stack("bioclim.tif") %>% 
+  subs(data.frame(-32768, NA), subsWithNA = F)
+
+# turn into dataframe with unique identifier
+# I remove variables that are directly derived from others (i.e. 3 & 7)
+# because they add no additional information 
+bc_df <- as.data.frame(bioclim) %>% 
+  dplyr::select(-c(bioclim.3, bioclim.7)) %>% 
+  rowid_to_column(var = "ID") %>% 
+  as_tibble
+
+# extract IDs of non-NA rows
+bc_ids <- bc_df %>%
+  na.omit %>% 
+  pull(ID)
+
+# scale and turn into a matrix
+bcmat <- dplyr::select(bc_df, -ID) %>%
+  scale %>%
+  na.omit %>%
+  as.matrix %>% 
+  unname
+
+set.seed(732)
+start.time <- Sys.time()
+# Try different numbers of clusters (leaving out 1 as the trivial case)
+# Köppen-Geiger has 30 categories, so the upper bound should be higher
+kms <- map(2:36, ~kmeans(bcmat, .x))
+end.time <- Sys.time()
+print(end.time - start.time) # show processing time
+
+library(magrittr) # for use_series(x,y), a pipe-friendly x$y alternative
+# create tibble of model performance stats
+km_stats <- tibble(
+  nclust = 2:36,
+  tot.wi = map_dbl(kms, ~use_series(.x, tot.withinss)),
+  tot.ss = map_dbl(kms, ~use_series(.x, totss)),
+  btw.ss = map_dbl(kms, ~use_series(.x, betweenss))) %>% 
+  mutate(var.ex = 100*btw.ss/tot.ss)
+
+# plot explained variance as a function of nclust
+ggplot(km_stats, aes(nclust, var.ex)) +
+  geom_line(linetype = 3) +
+  geom_point() +
+  geom_vline(xintercept = 16, col = 'red', linetype = 2) +
+  scale_x_continuous(breaks = 1:18*2) +
+  labs(x = "Number of clusters",
+       y = "Explained variance [%]")
+```
+
+The graph doesn't show a clear "elbow", where the increase in explained variance drops dramatically. I choose k=16 clusters. Based on the graph alone, choosing a lower number of clusters (e.g. 9 or 12) makes sense, but incorporating a-priori knowledge about the worldwide distribution of climate characteristics, maps for these cluster numbers exhibit a lack of distinction across large swaths of Eurasia.
+
+```{r}
+# extract explained variance at k=16 clusters
+slice(km_stats, 15) %>% dplyr::select(nclust, var.ex)
+```
+
+At 16 clusters, just over 82% of the variance is explained.
+
+```{r}
+# list elements have to be named for map_dfr() to work
+names(kms) <- paste0("Cluster", 2:36)
+
+# create dataframe of cluster assignment for different n of clusters
+bc_clusters <- bind_cols(ID = bc_ids,
+                         map_dfr(kms, ~use_series(.x, cluster))) %>%
+  mutate(across(-ID, as.factor))
+
+# join back to the original data
+bc_values <- left_join(bc_df, bc_clusters)
+```
+
+## 2. Run the k-Means cluster analysis based on the number of clusters (k) that you identified in task 1. Create and plot a map of the global bioclimatic classes (clusters).
+
+```{r}
+# function to choose a cluster and assign values to pixels
+cluster.raster <- function(n){
+  name_col <- paste0("Cluster", n)
+  r <- raster(bioclim)
+  r <- setValues(r, pull(bc_values, name_col))
+  return(r)
+}
+clust.stack <- map(2:36, cluster.raster) %>% stack
+
+plot(clust.stack[[11]],
+     col = rainbow(12),
+     main = "Climate classes with 12 k-means clusters",
+     xlab = "Longitude",
+     ylab = "Latitude")
+```
+
+At 12 clusters, the classification has a few glaring weaknesses, for example the lack of differentiation in Europe. Even more striking, however, is the distribution of category 1, which covers much of Southern China, Japan, the Southeastern US, the Amazon, Central Africa, Southern Brazil, but also parts of Indonesia, New Zealand and even Norway. This is clearly an absurd categorization that does not hold up to scrutiny. Therefore I chose to try more categories.  
+
+```{r}
+plot(clust.stack[[15]],
+     col = rainbow(16),
+     main = "Climate classes with 16 k-means clusters",
+     xlab = "Longitude",
+     ylab = "Latitude")
+```
+
+At 16 clusters, visual interpretation becomes challenging. While weaknesses can surely be found in this categorization as well, they are not as obvious as they were with 12 classes, at least not at first glance.
